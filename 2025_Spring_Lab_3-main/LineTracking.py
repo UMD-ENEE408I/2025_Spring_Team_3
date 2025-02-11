@@ -28,7 +28,7 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
+    cam.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
