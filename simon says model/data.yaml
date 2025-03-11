@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 10
+names: ['clap', 'dua', 'fist', 'handshake', 'heart', 'namaste', 'ok', 'one', 'palm', 'prayer']
+
+roboflow:
+  workspace: nanziba-basnin
+  project: yolo-hand-gesture
+  version: 1
+  license: Public Domain
+  url: https://universe.roboflow.com/nanziba-basnin/yolo-hand-gesture/dataset/1
