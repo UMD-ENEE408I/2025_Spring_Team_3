@@ -1,0 +1,4 @@
+Ip of jetson: 192.168.219.186
+IP of robot: 192.168.219.252
+My Computer IP: 192.168.219.125
+ 
