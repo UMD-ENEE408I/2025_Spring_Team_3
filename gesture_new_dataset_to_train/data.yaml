@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 5
+names: ['backward', 'forward', 'left', 'right', 'stop']
+
+roboflow:
+  workspace: yolo-fahxm
+  project: yolo-wkxzc
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/yolo-fahxm/yolo-wkxzc/dataset/3
