@@ -53,7 +53,7 @@ def process_frames():
             cv2.imshow("Hand Signal Detection", annotated_frame)
             cv2.waitKey(1)  # Required to refresh display
 
-if name == "main":
+if __name__ == "__main__":
     rospy.init_node(subscriberNodeName, anonymous=True)
     rospy.Subscriber(topicName, CompressedImage, callbackFunction, queue_size=1)
 
