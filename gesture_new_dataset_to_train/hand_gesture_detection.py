@@ -7,7 +7,7 @@ from cv_bridge import CvBridge
 import numpy as np
 
 # Load your custom-trained YOLO model
-model = YOLO("yolo11n.pt")
+model = YOLO("simonsaysv1.pt")
 
 # ROS Node Configuration
 subscriberNodeName = "camera_sensor_subscriber"
