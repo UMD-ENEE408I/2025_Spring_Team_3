@@ -10,10 +10,10 @@ from google.oauth2 import service_account
 
 import pyaudio
 
-#issue?
+
 
 creds = service_account.Credentials.from_service_account_file(
-    "C:/Users/ebin5/ENEE408I_Files/2025_Spring_Team_3/terpiez-project-ebin-4e23bad5e9ff.json"
+    "C:/Users/ebin5/ENEE408I_Files/2025_Spring_Team_3/terpiez-project-ebin-6a5faac731b4.json"
 )
 
 client = speech.SpeechClient(credentials=creds)
