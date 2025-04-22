@@ -80,7 +80,7 @@ while not rospy.is_shutdown():
             # === Movement Fixes ===
             # This variable controls speed.
             twist.linear.x = -0.001               # Correct forward direction (camera-facing)
-            twist.angular.z = correction * 0.5   # Correct turning direction
+            twist.angular.z = -correction * 0.5   # Correct turning direction
             cv2.drawContours(roi, [largest], -1, (0, 255, 0), 2)
             cv2.circle(roi, (cx, cy), 5, (0, 0, 255), -1)
     else:
