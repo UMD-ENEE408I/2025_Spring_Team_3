@@ -12,7 +12,7 @@ ENABLE_GUI = False  # Set to True ONLY if GUI is supported (not over SSH/headles
 
 # === PID Controller ===
 class PID:
-    def __init__(self, kp=0.005, ki=0.0001, kd=0.001):
+    def __init__(self, kp=0.001, ki=0.00001, kd=0.0001):
         self.kp = kp
         self.ki = ki
         self.kd = kd
@@ -79,7 +79,7 @@ while not rospy.is_shutdown():
             
             # === Movement Fixes ===
             # This variable controls speed.
-            twist.linear.x = -0.05               # Correct forward direction (camera-facing)
+            twist.linear.x = -0.001               # Correct forward direction (camera-facing)
             twist.angular.z = correction * 0.5   # Correct turning direction
             cv2.drawContours(roi, [largest], -1, (0, 255, 0), 2)
             cv2.circle(roi, (cx, cy), 5, (0, 0, 255), -1)
