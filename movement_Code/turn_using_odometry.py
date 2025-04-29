@@ -148,6 +148,9 @@ cap.set(4, 120)
 bridge = CvBridge()
 pid = PID()
 
+rospy.sleep(5)  # Wait 5 seconds before starting to allow camera to stabilize and robot to see the line
+
+
 if not cap.isOpened():
     print("[ERROR] Cannot open camera.")
     exit(1)
@@ -160,10 +163,24 @@ def publish_frame(frame):
 
 def process_roi(roi):
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, binary = cv2.threshold(blurred, 180, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return contours, binary
+
+    # === Contrast Stretching to boost line visibility ===
+    normalized = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+
+    # === Light Gaussian blur to soften glare ===
+    blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
+
+    # === Use simple binary threshold — we want bright pixels only ===
+    _, binary = cv2.threshold(blurred, 200, 255, cv2.THRESH_BINARY)
+
+    # === Morphological operations to clean up noise ===
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours, cleaned
+
 
 # === Main Loop ===
 MIN_CONTOUR_AREA = 200
