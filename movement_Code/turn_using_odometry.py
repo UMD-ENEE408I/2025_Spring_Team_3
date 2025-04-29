@@ -148,21 +148,45 @@ cap.set(4, 120)
 bridge = CvBridge()
 pid = PID()
 
+# def publish_frame(frame):
+#     if send_frames:
+#         # Create mask from frame (detect white regions like process_roi)
+#         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+#         _, mask = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+
+#         # Find contours from the mask
+#         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+#         # Draw the contours on the frame (in green)
+#         cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
+
+#         # Resize for transmission
+#         resized = cv2.resize(frame, (640, 480))
+#         compressed = bridge.cv2_to_compressed_imgmsg(resized, dst_format="jpeg")
+#         frame_pub.publish(compressed)
+
 def publish_frame(frame):
     if send_frames:
-        # Create mask from frame (detect white regions like process_roi)
+        # === NORMAL view with green contours ===
+        normal_view = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-
-        # Find contours from the mask
+        _, mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(normal_view, contours, -1, (0, 255, 0), 2)  # Green outline
 
-        # Draw the contours on the frame (in green)
-        cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
+        # === BINARY thresholded view ===
+        binary_view = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
-        # Resize for transmission
-        resized = cv2.resize(frame, (640, 480))
-        compressed = bridge.cv2_to_compressed_imgmsg(resized, dst_format="jpeg")
+        # === Resize both to same size ===
+        normal_resized = cv2.resize(normal_view, (320, 240))
+        binary_resized = cv2.resize(binary_view, (320, 240))
+
+        # === Combine both side by side ===
+        combined = np.hstack((normal_resized, binary_resized))
+
+        # === Publish the combined frame ===
+        combined_resized = cv2.resize(combined, (640, 240))  # Optional: resize larger
+        compressed = bridge.cv2_to_compressed_imgmsg(combined_resized, dst_format="jpeg")
         frame_pub.publish(compressed)
 
 
