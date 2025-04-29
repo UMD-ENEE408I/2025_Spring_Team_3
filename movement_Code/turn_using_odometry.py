@@ -130,7 +130,7 @@ def look_for_line(direction='right', angle_degrees=90):
         return False
     height, width, _ = frame.shape
     roi = frame[int(height * 0.75):, :]
-    contours, _ = process_roi(roi)
+    contours, _ = process_roi_and_decide(roi)
     return any(cv2.contourArea(c) > MIN_CONTOUR_AREA for c in contours)
 
 # === Initialize ROS ===
@@ -176,25 +176,46 @@ if not cap.isOpened():
     exit(1)
 
 
-def process_roi(roi):
-    # BGR color space (OpenCV default)
-    bgr = roi
+# def process_roi(roi):
+#     # BGR color space (OpenCV default)
+#     bgr = roi
 
-    # Looser threshold for "bright enough" areas
-    lower_white = np.array([150, 150, 150])
-    upper_white = np.array([255, 255, 255])
+#     # Looser threshold for "bright enough" areas
+#     lower_white = np.array([150, 150, 150])
+#     upper_white = np.array([255, 255, 255])
 
-    # Mask bright regions
-    mask = cv2.inRange(bgr, lower_white, upper_white)
+#     # Mask bright regions
+#     mask = cv2.inRange(bgr, lower_white, upper_white)
 
-    # Morphological cleaning
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
+#     # Morphological cleaning
+#     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+#     cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+#     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
 
-    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return contours, cleaned
+#     contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#     return contours, cleaned
 
+def process_roi_and_decide(roi):
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+
+    height, width = binary.shape
+    left_zone = binary[:, :width // 3]
+    center_zone = binary[:, width // 3: 2 * width // 3]
+    right_zone = binary[:, 2 * width // 3:]
+
+    # Sum of white pixels in each region
+    left_sum = np.sum(left_zone == 255)
+    center_sum = np.sum(center_zone == 255)
+    right_sum = np.sum(right_zone == 255)
+
+    decision = "straight"
+    if left_sum > right_sum and left_sum > center_sum * 1.5:
+        decision = "left"
+    elif right_sum > left_sum and right_sum > center_sum * 1.5:
+        decision = "right"
+
+    return binary, decision
 
 
 # === Main Loop ===
@@ -210,8 +231,8 @@ while not rospy.is_shutdown():
     roi_bottom = frame[int(height * 0.75):, :]
     roi_top = frame[int(height * 0.5):int(height * 0.65), :]
 
-    contours_bottom, binary_bottom = process_roi(roi_bottom)
-    contours_top, binary_top = process_roi(roi_top)
+    contours_bottom, binary_bottom = process_roi_and_decide(roi_bottom)
+    contours_top, binary_top = process_roi_and_decide(roi_top)
 
     twist = Twist()
     valid_contours = [c for c in contours_bottom if cv2.contourArea(c) > MIN_CONTOUR_AREA]
