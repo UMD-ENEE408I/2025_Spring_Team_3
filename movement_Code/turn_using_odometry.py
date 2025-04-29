@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+
+# THIS CODE DID PRETTY WELL SAVE IT
 import rospy
 import cv2
 import numpy as np
