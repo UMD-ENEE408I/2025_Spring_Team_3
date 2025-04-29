@@ -177,24 +177,25 @@ if not cap.isOpened():
 
 
 def process_roi(roi):
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # Convert to RGB color space (OpenCV uses BGR by default)
+    bgr = roi
 
-    # === Contrast Stretching to boost line visibility ===
-    normalized = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    # Define lower and upper bounds for "white" in RGB
+    # Allow some flexibility to handle glare or lighting
+    lower_white = np.array([200, 200, 200])  # light gray to white
+    upper_white = np.array([255, 255, 255])
 
-    # === Light Gaussian blur to soften glare ===
-    blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
+    # Create mask for white areas
+    mask = cv2.inRange(bgr, lower_white, upper_white)
 
-    # === Use simple binary threshold — we want bright pixels only ===
-    _, binary = cv2.threshold(blurred, 200, 255, cv2.THRESH_BINARY)
-
-    # === Morphological operations to clean up noise ===
+    # Morphological operations to clean up noise and fill small gaps
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
 
     contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     return contours, cleaned
+
 
 
 # === Main Loop ===
