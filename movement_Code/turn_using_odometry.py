@@ -148,6 +148,12 @@ cap.set(4, 120)
 bridge = CvBridge()
 pid = PID()
 
+def publish_frame(frame):
+    if send_frames:
+        resized = cv2.resize(frame, (640, 480))
+        compressed = bridge.cv2_to_compressed_imgmsg(resized, dst_format="jpeg")
+        frame_pub.publish(compressed)
+        
 # === Initial delay while showing and publishing frames ===
 rospy.loginfo("Warming up camera and waiting 5 seconds...")
 start_time = rospy.Time.now().to_sec()
@@ -169,11 +175,6 @@ if not cap.isOpened():
     print("[ERROR] Cannot open camera.")
     exit(1)
 
-def publish_frame(frame):
-    if send_frames:
-        resized = cv2.resize(frame, (640, 480))
-        compressed = bridge.cv2_to_compressed_imgmsg(resized, dst_format="jpeg")
-        frame_pub.publish(compressed)
 
 def process_roi(roi):
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
