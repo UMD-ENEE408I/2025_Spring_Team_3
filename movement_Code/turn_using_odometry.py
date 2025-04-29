@@ -177,19 +177,18 @@ if not cap.isOpened():
 
 
 def process_roi(roi):
-    # Convert to RGB color space (OpenCV uses BGR by default)
+    # BGR color space (OpenCV default)
     bgr = roi
 
-    # Define lower and upper bounds for "white" in RGB
-    # Allow some flexibility to handle glare or lighting
-    lower_white = np.array([200, 200, 200])  # light gray to white
+    # Looser threshold for "bright enough" areas
+    lower_white = np.array([150, 150, 150])
     upper_white = np.array([255, 255, 255])
 
-    # Create mask for white areas
+    # Mask bright regions
     mask = cv2.inRange(bgr, lower_white, upper_white)
 
-    # Morphological operations to clean up noise and fill small gaps
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    # Morphological cleaning
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
 
