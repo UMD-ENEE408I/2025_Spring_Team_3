@@ -150,9 +150,21 @@ pid = PID()
 
 def publish_frame(frame):
     if send_frames:
+        # Create mask from frame (detect white regions like process_roi)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+
+        # Find contours from the mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Draw the contours on the frame (in green)
+        cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
+
+        # Resize for transmission
         resized = cv2.resize(frame, (640, 480))
         compressed = bridge.cv2_to_compressed_imgmsg(resized, dst_format="jpeg")
         frame_pub.publish(compressed)
+
 
 # === Initial delay while showing and publishing frames ===
 rospy.loginfo("Warming up camera and waiting 5 seconds...")
