@@ -148,7 +148,21 @@ cap.set(4, 120)
 bridge = CvBridge()
 pid = PID()
 
-rospy.sleep(5)  # Wait 5 seconds before starting to allow camera to stabilize and robot to see the line
+# === Initial delay while showing and publishing frames ===
+rospy.loginfo("Warming up camera and waiting 5 seconds...")
+start_time = rospy.Time.now().to_sec()
+while rospy.Time.now().to_sec() - start_time < 5 and not rospy.is_shutdown():
+    ret, frame = cap.read()
+    if ret:
+        publish_frame(frame)
+        if ENABLE_GUI:
+            try:
+                cv2.imshow("Startup Camera View", frame)
+                cv2.waitKey(1)
+            except cv2.error as e:
+                rospy.logwarn(f"[WARN] GUI display failed: {e}")
+    rospy.sleep(0.05)
+
 
 
 if not cap.isOpened():
