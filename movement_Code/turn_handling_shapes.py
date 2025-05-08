@@ -172,16 +172,36 @@ def process_roi_and_decide(roi):
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
     height, width = binary.shape
-    thirds = np.hsplit(binary, 3)
-    pixel_counts = [np.sum(third == 255) for third in thirds]
+    third = width // 3
+    left_zone = binary[:, :third]
+    center_zone = binary[:, third:2*third]
+    right_zone = binary[:, 2*third:]
+    left_sum = np.sum(left_zone == 255)
+    center_sum = np.sum(center_zone == 255)
+    right_sum = np.sum(right_zone == 255)
     decision = "lost"
-    if pixel_counts[1] > max(pixel_counts[0], pixel_counts[2]) * 0.7:
+    if center_sum > max(left_sum, right_sum) * 0.7:
         decision = "straight"
-    elif pixel_counts[0] > pixel_counts[2]:
+    elif left_sum > right_sum:
         decision = "left"
-    elif pixel_counts[2] > pixel_counts[0]:
+    elif right_sum > left_sum:
         decision = "right"
     return binary, decision
+
+def detect_turn_direction(roi):
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if len(contours) == 1:
+        x, _, w, _ = cv2.boundingRect(contours[0])
+        cx = x + w // 2
+        width = roi.shape[1]
+        if cx < width // 3:
+            return "left"
+        elif cx > 2 * width // 3:
+            return "right"
+    return "unclear"
 
 # === Main Loop ===
 MIN_CONTOUR_AREA = 200
@@ -220,10 +240,22 @@ while not rospy.is_shutdown():
         rospy.loginfo("[INFO] Curve detected → turning RIGHT.")
 
     elif decision_top != "lost" and not turning:
-        twist.linear.x = 0.0
-        twist.angular.z = SCAN_SPEED
-        cmd_pub.publish(twist)
-        rospy.logwarn("Line lost below, found above → turning RIGHT to reacquire")
+        turn_decision = detect_turn_direction(roi_top)
+        if turn_decision == "left":
+            turning = True
+            rospy.logwarn("[TURN] Top ROI shows LEFT → committing to full 90° left turn")
+            turn_left(90)
+            turning = False
+        elif turn_decision == "right":
+            turning = True
+            rospy.logwarn("[TURN] Top ROI shows RIGHT → committing to full 90° right turn")
+            turn_right(90)
+            turning = False
+        else:
+            twist.linear.x = 0.0
+            twist.angular.z = SCAN_SPEED
+            cmd_pub.publish(twist)
+            rospy.logwarn("Top ROI unclear → rotating slightly to reacquire")
 
     elif not turning:
         turning = True
