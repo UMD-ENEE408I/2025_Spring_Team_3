@@ -12,11 +12,11 @@ import pyaudio
 
 
 
-creds = service_account.Credentials.from_service_account_file(
-    "C:/Users/ebin5/ENEE408I_Files/2025_Spring_Team_3/terpiez-project-ebin-6a5faac731b4.json"
-)
+# creds = service_account.Credentials.from_service_account_file(
+#     "C:/Users/ebin5/ENEE408I_Files/2025_Spring_Team_3/terpiez-project-ebin-6a5faac731b4.json"
+# )
 
-# creds = service_account.Credentials.from_service_account_file("key.json")
+creds = service_account.Credentials.from_service_account_file("key.json")
 
 client = speech.SpeechClient(credentials=creds)
 
