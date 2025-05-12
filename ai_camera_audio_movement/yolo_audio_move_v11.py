@@ -3,28 +3,15 @@ import logging
 import ctypes
 from ctypes import CFUNCTYPE, c_char_p, c_int
 from ctypes.util import find_library
-
-""" 
-Simon Says YOLO + Odometry ROS Node
-Combines YOLO-based hand‑gesture detection and Google Cloud Speech audio commands.
-
-Usage:
- - Say “Simon says” → next hand gesture (forward/backward/left/right) triggers
-   an odometry‑based move or turn.
- - Say “audio Simon says” → next spoken command (forward/backward/left <deg>/right <deg>)
-   triggers an odometry‑based move or turn.
- - Will stop during motion when "Stop" is heard
- - Works well for these goals
-"""
-
-# — now import ROS, OpenCV, PyAudio, etc. —
-import rospy
-import cv2
+import time
 import re
 import threading
 import queue
-import torch
 import math
+
+import rospy
+import cv2
+import torch
 from ultralytics import YOLO
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import Odometry
@@ -33,8 +20,24 @@ from cv_bridge import CvBridge
 from tf.transformations import euler_from_quaternion
 from google.cloud import speech
 from google.oauth2 import service_account
+import grpc
+from google.api_core.exceptions import OutOfRange as GoogleOutOfRange
 import pyaudio
 
+"""
+Simon Says YOLO + Odometry ROS Node
+Combines YOLO-based hand‑gesture detection and Google Cloud Speech audio commands.
+
+Usage:
+ - Say “Simon says” → next hand gesture (forward/backward/left/right) triggers
+   an odometry‑based move or turn.
+ - Say “audio Simon says” → next spoken command (forward/backward/left <deg>/right <deg>)
+   triggers an odometry‑based move or turn.
+ - At any time “stop” halts motion immediately.
+ - Now supports “audio Simon says” + <number> + direction to specify distance/angle.
+ - THERE IS A 5 MINUTE MAX FOR AUDIO DETECTION, WHEN IT IS HIT, IT RESETS 
+ - Trying to add turning into line following
+"""
 
 # === Constants ===
 RATE = 16000
@@ -50,14 +53,40 @@ VIDEO_TOPIC = "video_topic/compressed"
 YOLO_MODEL_PATH = "simonsaysv1.pt"
 GOOGLE_CREDENTIALS = "key.json"
 
-# modes & queues
+# === Mode flags & queues ===
 simon_mode = False
 audio_mode = False
+line_mode = False
 frame_queue = queue.Queue(maxsize=1)
-command_queue = queue.Queue()  # <-- single-motion queue
+command_queue = queue.Queue()
 bridge = CvBridge()
 
-# load YOLO
+
+# === PID Controller for line following ===
+class PID:
+    def __init__(self, kp=0.001, ki=0.00001, kd=0.0001):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.prev_error = 0
+        self.integral = 0
+        self.last_time = time.time()
+
+    def compute(self, error):
+        current_time = time.time()
+        dt = current_time - self.last_time
+        self.last_time = current_time
+
+        self.integral += error * dt
+        derivative = (error - self.prev_error) / dt if dt > 0 else 0
+        self.prev_error = error
+
+        return self.kp * error + self.ki * self.integral + self.kd * derivative
+
+
+pid = PID()
+
+# === Load YOLO model ===
 model = YOLO(YOLO_MODEL_PATH)
 
 
@@ -187,11 +216,6 @@ class MicrophoneStream:
             yield b"".join(data)
 
 
-def parse_angle(text, default=TURN_ANGLE_DEG):
-    m = re.search(r"(\d+)", text)
-    return int(m.group(1)) if m else default
-
-
 def image_callback(msg):
     try:
         frame = bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
@@ -202,14 +226,70 @@ def image_callback(msg):
 
 
 def process_frames():
-    global simon_mode, audio_mode
+    global simon_mode, audio_mode, line_mode
+
     while not rospy.is_shutdown():
         frame = frame_queue.get()
-        results = model(frame)
+
+        # LINE FOLLOW MODE
+        if line_mode:
+            height, width = frame.shape[:2]
+            roi = frame[int(height * 0.75) :, :]
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(
+                binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            twist = Twist()
+            if contours:
+                # pick largest contour
+                largest = max(contours, key=cv2.contourArea)
+                M = cv2.moments(largest)
+                if M["m00"] != 0:
+                    # 1) centroid error
+                    cx = int(M["m10"] / M["m00"])
+                    error = cx - width // 2
+                    correction = pid.compute(error)
+
+                    # 2) fit a line through the contour to get its angle
+                    pts = largest.reshape(-1, 2)
+                    vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+                    line_angle = math.atan2(vy, vx)  # radians
+
+                    # 3) combine centroid‐based and orientation‐based steering
+                    gain_t = 0.5  # how strongly to correct centroid error
+                    gain_a = 1.0  # how strongly to align with line angle
+                    angular = -correction * gain_t - line_angle * gain_a
+
+                    # drive
+                    twist.linear.x = -LINEAR_SPEED
+                    twist.angular.z = angular
+                    mover.cmd_pub.publish(twist)
+
+                    # (optional) draw for debugging
+                    cv2.drawContours(roi, [largest], -1, (0, 255, 0), 2)
+                    cv2.circle(roi, (cx, int(M["m01"] / M["m00"])), 5, (0, 0, 255), -1)
+                    # draw the fitted line
+                    pt1 = (int(x0 - vy * 100), int(y0 + vx * 100))
+                    pt2 = (int(x0 + vy * 100), int(y0 - vx * 100))
+                    cv2.line(roi, pt1, pt2, (255, 0, 0), 2)
+
+                    cv2.imshow("Line Follow", roi)
+                    cv2.waitKey(1)
+                    continue
+
+            # if we get here, no contours or lost line → stop
+            rospy.logwarn("[LINE] Lost line – exiting line-follow mode")
+            line_mode = False
+            mover.stop_motion()
+            continue
+
+        # GESTURE MODE (YOLO)
+        results = model(frame, verbose=False)
         annotated = results[0].plot()
         cv2.imshow("SimonSaysYOLO", annotated)
         cv2.waitKey(1)
-
         if simon_mode and not audio_mode:
             for det in results[0].boxes:
                 label = model.names[int(det.cls)]
@@ -229,7 +309,7 @@ def process_frames():
 
 
 def audio_thread():
-    global simon_mode, audio_mode
+    global simon_mode, audio_mode, line_mode
 
     creds = service_account.Credentials.from_service_account_file(GOOGLE_CREDENTIALS)
     client = speech.SpeechClient(credentials=creds)
@@ -242,61 +322,72 @@ def audio_thread():
         config=config, interim_results=True
     )
 
-    with MicrophoneStream(RATE, CHUNK) as stream:
-        requests = (
-            speech.StreamingRecognizeRequest(audio_content=chunk)
-            for chunk in stream.generator()
-        )
-        responses = client.streaming_recognize(streaming_config, requests)
+    while not rospy.is_shutdown():  # restart on stream end
+        with MicrophoneStream(RATE, CHUNK) as stream:
+            requests = (
+                speech.StreamingRecognizeRequest(audio_content=chunk)
+                for chunk in stream.generator()
+            )
+            try:
+                responses = client.streaming_recognize(streaming_config, requests)
+                for resp in responses:
+                    if not resp.results:
+                        continue
+                    alt = resp.results[0].alternatives
+                    if not alt:
+                        continue
+                    transcript = alt[0].transcript.lower().strip()
+                    rospy.loginfo(f"🗣️ Heard: {transcript}")
 
-        for resp in responses:
-            if not resp.results:
+                    if "stop" in transcript:
+                        mover.stop_motion()
+                        simon_mode = audio_mode = line_mode = False
+                        continue
+                    if "line follow" in transcript:
+                        line_mode = True
+                        simon_mode = audio_mode = False
+                        rospy.loginfo("🏁 Line-follow mode ON")
+                        continue
+                    if "audio simon says" in transcript:
+                        audio_mode = True
+                        simon_mode = False
+                        rospy.loginfo("🔊 AUDIO mode ON")
+                        continue
+                    if "simon says" in transcript:
+                        simon_mode = True
+                        audio_mode = False
+                        rospy.loginfo("🤖 GESTURE mode ON")
+                        continue
+                    if audio_mode:
+                        m = re.match(
+                            r"^(?:(\d+)\s*)?(forward|backward|backwards|left|right)\b",
+                            transcript,
+                        )
+                        if not m:
+                            continue
+                        num_str, cmd = m.groups()
+                        if cmd in ("forward", "backward", "backwards"):
+                            dist = int(num_str) if num_str else DEFAULT_DISTANCE_IN
+                            fn = (
+                                mover.move_backward
+                                if cmd == "forward"
+                                else mover.move_forward
+                            )
+                            command_queue.put((fn, (dist,), {}))
+                        else:
+                            deg = int(num_str) if num_str else TURN_ANGLE_DEG
+                            angle = deg if cmd == "left" else -deg
+                            command_queue.put((mover.turn_degrees, (angle,), {}))
+                        rospy.loginfo(
+                            f"🛑 AUDIO mode OFF (did {cmd} {num_str or 'default'})"
+                        )
+                        audio_mode = simon_mode = False
+            except (grpc.RpcError, GoogleOutOfRange) as e:
+                rospy.logwarn("🎧 Audio stream ended, restarting…")
                 continue
-            alt = resp.results[0].alternatives
-            if not alt:
-                continue
-            transcript = alt[0].transcript.lower().strip()
-            rospy.loginfo(f"🗣️ Heard: {transcript}")
-
-            # **Stop always wins**
-            if "stop" in transcript:
-                mover.stop_motion()
-                simon_mode = False
-                audio_mode = False
-                continue
-
-            if "audio simon says" in transcript:
-                audio_mode = True
-                simon_mode = False
-                rospy.loginfo("🔊 AUDIO mode on")
-                continue
-            if "simon says" in transcript:
-                simon_mode = True
-                audio_mode = False
-                rospy.loginfo("🤖 GESTURE mode on")
-                continue
-
-            if audio_mode:
-                if "forward" in transcript:
-                    command_queue.put((mover.move_backward, (), {}))
-                elif "backward" in transcript:
-                    command_queue.put((mover.move_forward, (), {}))
-                elif "left" in transcript:
-                    angle = parse_angle(transcript)
-                    command_queue.put((mover.turn_degrees, (angle,), {}))
-                elif "right" in transcript:
-                    angle = parse_angle(transcript)
-                    command_queue.put((mover.turn_degrees, (-angle,), {}))
-                else:
-                    rospy.logwarn(f"❓ Unknown audio cmd: {transcript}")
-
-                simon_mode = False
-                audio_mode = False
-                rospy.loginfo("🛑 AUDIO mode off")
 
 
 def motion_dispatcher():
-    """Single-threaded worker: executes one motion at a time."""
     while not rospy.is_shutdown():
         fn, args, kwargs = command_queue.get()
         try:
@@ -311,14 +402,13 @@ def main():
     global mover
     mover = OdometricTurtleMover()
 
-    # start dispatcher, frame & audio threads
     threading.Thread(target=motion_dispatcher, daemon=True).start()
     threading.Thread(target=process_frames, daemon=True).start()
     threading.Thread(target=audio_thread, daemon=True).start()
 
     rospy.Subscriber(VIDEO_TOPIC, CompressedImage, image_callback, queue_size=1)
 
-    rospy.loginfo("🚀 Node running: Simon Says YOLO + Odometry")
+    rospy.loginfo("🚀 Node running: Simon Says + YOLO + Odometry + Line Follow")
     rospy.spin()
     cv2.destroyAllWindows()
 

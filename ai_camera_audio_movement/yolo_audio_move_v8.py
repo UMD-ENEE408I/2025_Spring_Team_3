@@ -4,7 +4,7 @@ import ctypes
 from ctypes import CFUNCTYPE, c_char_p, c_int
 from ctypes.util import find_library
 
-""" 
+"""
 Simon Says YOLO + Odometry ROS Node
 Combines YOLO-based hand‑gesture detection and Google Cloud Speech audio commands.
 
@@ -13,8 +13,8 @@ Usage:
    an odometry‑based move or turn.
  - Say “audio Simon says” → next spoken command (forward/backward/left <deg>/right <deg>)
    triggers an odometry‑based move or turn.
- - Will stop during motion when "Stop" is heard
- - Works well for these goals
+ - At any time “stop” halts motion immediately.
+ - Now supports “audio Simon says” + <number> + direction to specify distance/angle.
 """
 
 # — now import ROS, OpenCV, PyAudio, etc. —
@@ -35,7 +35,6 @@ from google.cloud import speech
 from google.oauth2 import service_account
 import pyaudio
 
-
 # === Constants ===
 RATE = 16000
 CHUNK = int(RATE / 10)
@@ -54,7 +53,7 @@ GOOGLE_CREDENTIALS = "key.json"
 simon_mode = False
 audio_mode = False
 frame_queue = queue.Queue(maxsize=1)
-command_queue = queue.Queue()  # <-- single-motion queue
+command_queue = queue.Queue()  # single-motion queue
 bridge = CvBridge()
 
 # load YOLO
@@ -205,7 +204,8 @@ def process_frames():
     global simon_mode, audio_mode
     while not rospy.is_shutdown():
         frame = frame_queue.get()
-        results = model(frame)
+        # suppress YOLO speed prints
+        results = model(frame, verbose=False)
         annotated = results[0].plot()
         cv2.imshow("SimonSaysYOLO", annotated)
         cv2.waitKey(1)
@@ -258,13 +258,14 @@ def audio_thread():
             transcript = alt[0].transcript.lower().strip()
             rospy.loginfo(f"🗣️ Heard: {transcript}")
 
-            # **Stop always wins**
+            # Stop always wins
             if "stop" in transcript:
                 mover.stop_motion()
                 simon_mode = False
                 audio_mode = False
                 continue
 
+            # Mode switches
             if "audio simon says" in transcript:
                 audio_mode = True
                 simon_mode = False
@@ -276,23 +277,27 @@ def audio_thread():
                 rospy.loginfo("🤖 GESTURE mode on")
                 continue
 
+            # Handle audio-mode commands with optional number
             if audio_mode:
-                if "forward" in transcript:
-                    command_queue.put((mover.move_backward, (), {}))
-                elif "backward" in transcript:
-                    command_queue.put((mover.move_forward, (), {}))
-                elif "left" in transcript:
-                    angle = parse_angle(transcript)
-                    command_queue.put((mover.turn_degrees, (angle,), {}))
-                elif "right" in transcript:
-                    angle = parse_angle(transcript)
-                    command_queue.put((mover.turn_degrees, (-angle,), {}))
+                m = re.match(
+                    r"^(?:(\d+)\s*)?(forward|backward|backwards|left|right)\b", transcript
+                )
+                if not m:
+                    # still waiting for full "<num> direction"
+                    continue
+                num_str, cmd = m.groups()
+                if cmd in ("forward", "backward"):
+                    dist = int(num_str) if num_str else DEFAULT_DISTANCE_IN
+                    fn = mover.move_backward if cmd == "forward" else mover.move_forward
+                    command_queue.put((fn, (dist,), {}))
                 else:
-                    rospy.logwarn(f"❓ Unknown audio cmd: {transcript}")
+                    deg = int(num_str) if num_str else TURN_ANGLE_DEG
+                    angle = deg if cmd == "left" else -deg
+                    command_queue.put((mover.turn_degrees, (angle,), {}))
 
-                simon_mode = False
+                rospy.loginfo(f"🛑 AUDIO mode off (did {cmd} {num_str or 'default'})")
                 audio_mode = False
-                rospy.loginfo("🛑 AUDIO mode off")
+                simon_mode = False
 
 
 def motion_dispatcher():
