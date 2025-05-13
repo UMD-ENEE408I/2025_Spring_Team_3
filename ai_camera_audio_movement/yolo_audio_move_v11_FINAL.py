@@ -36,7 +36,7 @@ Usage:
  - At any time “stop” halts motion immediately.
  - Now supports “audio Simon says” + <number> + direction to specify distance/angle.
  - THERE IS A 5 MINUTE MAX FOR AUDIO DETECTION, WHEN IT IS HIT, IT RESETS 
- - Trying to add turning into line following
+ - Line following is working great and it turns just like our old code did oh so long ago
 """
 
 # === Constants ===
@@ -45,8 +45,9 @@ CHUNK = int(RATE / 10)
 INCH_TO_M = 0.0254
 DEFAULT_DISTANCE_IN = 6
 TURN_ANGLE_DEG = 90
-LINEAR_SPEED = 0.2
+LINEAR_SPEED = 0.05
 ANGULAR_SPEED = 0.5
+
 
 NODE_NAME = "simon_says_yolo_odometry"
 VIDEO_TOPIC = "video_topic/compressed"
@@ -231,59 +232,74 @@ def process_frames():
     while not rospy.is_shutdown():
         frame = frame_queue.get()
 
-        # LINE FOLLOW MODE
+        # ===== LINE FOLLOW MODE =====
         if line_mode:
             height, width = frame.shape[:2]
-            roi = frame[int(height * 0.75) :, :]
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-            contours, _ = cv2.findContours(
-                binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
+            bottom_roi = frame[int(height * 0.75) :, :]
+            mid_roi = frame[int(height * 0.5) : int(height * 0.75), :]
+
+            # helper to binarize & find contours
+            def process_roi(roi):
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                _, bin = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+                cnts, _ = cv2.findContours(
+                    bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                return cnts, bin
+
+            bottom_cnts, bottom_bin = process_roi(bottom_roi)
+            mid_cnts, mid_bin = process_roi(mid_roi)
 
             twist = Twist()
-            if contours:
-                # pick largest contour
-                largest = max(contours, key=cv2.contourArea)
+
+            # 1) Preemptive turn if the line has left the bottom slice but still appears in mid slice
+            if not bottom_cnts and mid_cnts:
+                largest = max(mid_cnts, key=cv2.contourArea)
                 M = cv2.moments(largest)
                 if M["m00"] != 0:
-                    # 1) centroid error
+                    cx = int(M["m10"] / M["m00"])
+                    rospy.loginfo("[LINE] Preemptive turn (mid ROI only)")
+                    twist.linear.x = -LINEAR_SPEED
+                    twist.angular.z = 0.5 if cx < width // 2 else -0.5
+
+            # 2) Normal PID‐based tracking on the bottom ROI
+            elif bottom_cnts:
+                largest = max(bottom_cnts, key=cv2.contourArea)
+                M = cv2.moments(largest)
+                if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
                     error = cx - width // 2
-                    correction = pid.compute(error)
-
-                    # 2) fit a line through the contour to get its angle
-                    pts = largest.reshape(-1, 2)
-                    vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
-                    line_angle = math.atan2(vy, vx)  # radians
-
-                    # 3) combine centroid‐based and orientation‐based steering
-                    gain_t = 0.5  # how strongly to correct centroid error
-                    gain_a = 1.0  # how strongly to align with line angle
-                    angular = -correction * gain_t - line_angle * gain_a
-
-                    # drive
+                    corr = pid.compute(error)
+                    rospy.loginfo(
+                        f"[LINE] PID follow | cx={cx} err={error} corr={corr:.3f}"
+                    )
                     twist.linear.x = -LINEAR_SPEED
-                    twist.angular.z = angular
-                    mover.cmd_pub.publish(twist)
+                    twist.angular.z = -corr * 0.5
 
-                    # (optional) draw for debugging
-                    cv2.drawContours(roi, [largest], -1, (0, 255, 0), 2)
-                    cv2.circle(roi, (cx, int(M["m01"] / M["m00"])), 5, (0, 0, 255), -1)
-                    # draw the fitted line
-                    pt1 = (int(x0 - vy * 100), int(y0 + vx * 100))
-                    pt2 = (int(x0 + vy * 100), int(y0 - vx * 100))
-                    cv2.line(roi, pt1, pt2, (255, 0, 0), 2)
-
-                    cv2.imshow("Line Follow", roi)
+                    # if ENABLE_GUI:
+                    cv2.drawContours(bottom_roi, [largest], -1, (0, 255, 0), 2)
+                    cv2.circle(
+                        bottom_roi,
+                        (cx, int(bottom_roi.shape[0] / 2)),
+                        5,
+                        (0, 0, 255),
+                        -1,
+                    )
+                    cv2.imshow("Bottom ROI", bottom_roi)
+                    cv2.imshow("Bottom Mask", bottom_bin)
+                    cv2.imshow("SimonSaysYOLO", frame)
                     cv2.waitKey(1)
-                    continue
 
-            # if we get here, no contours or lost line → stop
-            rospy.logwarn("[LINE] Lost line – exiting line-follow mode")
-            line_mode = False
-            mover.stop_motion()
-            continue
+            # 3) Lost line entirely → stop and exit line‐follow mode
+            else:
+                rospy.logwarn("[LINE] Lost line – exiting line‑follow mode")
+                line_mode = False
+                mover.stop_motion()
+                continue
+
+            # publish whatever twist we’ve computed
+            mover.cmd_pub.publish(twist)
+            continue  # skip gesture processing this frame
 
         # GESTURE MODE (YOLO)
         results = model(frame, verbose=False)
