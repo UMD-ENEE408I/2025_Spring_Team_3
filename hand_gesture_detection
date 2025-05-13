@@ -25,47 +25,47 @@ frame_queue = Queue(maxsize=2)
 
 # === Callback: Convert and queue frames ===
 def callbackFunction(message):
-    try:
-        frame = bridgeObject.compressed_imgmsg_to_cv2(message, "bgr8")
-        if frame is None:
-            rospy.logwarn("⚠️ Frame conversion returned None")
-            return
-        resized_frame = cv2.resize(frame, (640, 480))
-        if not frame_queue.full():
-            frame_queue.put(resized_frame)
-    except Exception as e:
-        rospy.logerr(f"❌ Error converting frame: {e}")
+	try:
+    	frame = bridgeObject.compressed_imgmsg_to_cv2(message, "bgr8")
+    	if frame is None:
+        	rospy.logwarn("⚠️ Frame conversion returned None")
+        	return
+    	resized_frame = cv2.resize(frame, (640, 480))
+    	if not frame_queue.full():
+        	frame_queue.put(resized_frame)
+	except Exception as e:
+    	rospy.logerr(f"❌ Error converting frame: {e}")
 
 # === Processing Thread: Run YOLO ===
 def process_frames():
-    while not rospy.is_shutdown():
-        if not frame_queue.empty():
-            frame = frame_queue.get()
+	while not rospy.is_shutdown():
+    	if not frame_queue.empty():
+        	frame = frame_queue.get()
 
-            try:
-                # Run inference
-                results = model(frame)
+        	try:
+            	# Run inference
+            	results = model(frame)
 
-                # Plot annotated frame
-                annotated = results[0].plot()
+            	# Plot annotated frame
+            	annotated = results[0].plot()
 
-                # Display output
-                cv2.imshow("YOLOv11 - GPU Inference", annotated)
-                cv2.waitKey(1)
-            except Exception as e:
-                rospy.logerr(f"❌ YOLO processing error: {e}")
+            	# Display output
+            	cv2.imshow("YOLOv11 - GPU Inference", annotated)
+            	cv2.waitKey(1)
+        	except Exception as e:
+            	rospy.logerr(f"❌ YOLO processing error: {e}")
 
 # === Main Entry ===
 if __name__ == "__main__":
-    rospy.init_node(subscriberNodeName, anonymous=True)
-    rospy.Subscriber(topicName, CompressedImage, callbackFunction, queue_size=1)
+	rospy.init_node(subscriberNodeName, anonymous=True)
+	rospy.Subscriber(topicName, CompressedImage, callbackFunction, queue_size=1)
 
-    # Start processing thread
-    Thread(target=process_frames, daemon=True).start()
+	# Start processing thread
+	Thread(target=process_frames, daemon=True).start()
 
-    try:
-        rospy.spin()
-    except KeyboardInterrupt:
-        rospy.loginfo("🔻 Shutting down node.")
-    finally:
-        cv2.destroyAllWindows()
+	try:
+    	rospy.spin()
+	except KeyboardInterrupt:
+    	rospy.loginfo("🔻 Shutting down node.")
+	finally:
+    	cv2.destroyAllWindows()

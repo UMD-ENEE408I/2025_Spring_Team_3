@@ -2,15 +2,14 @@
 
 import rospy
 import cv2
-import re
-import time
-import torch
 import queue
+import time
 import pyaudio
-from cv_bridge import CvBridge
-from sensor_msgs.msg import CompressedImage
-from geometry_msgs.msg import Twist
+import torch
 from threading import Thread
+from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge
 from ultralytics import YOLO
 from google.cloud import speech
 from google.oauth2 import service_account
@@ -20,22 +19,19 @@ RATE = 16000
 CHUNK = int(RATE / 10)
 GESTURES = ['forward', 'backward', 'left', 'right', 'stop']
 
-# === Google Cloud Credentials ===
-creds = service_account.Credentials.from_service_account_file("key.json")
-client = speech.SpeechClient(credentials=creds)
-
-# === YOLO Model (GPU) ===
-model = YOLO("simonsaysv1.pt")
-model.to('cuda')
-bridgeObject = CvBridge()
-
-# === ROS Setup ===
+# === Globals ===
 pub = None
+bridge = CvBridge()
 frame_queue = queue.Queue(maxsize=2)
 latest_frame = None
-camera_topic = "/usb_cam/image_raw/compressed"  # From TurtleBot
+frame_ready = False
+frame_count = 0
 
-# === Movement Control ===
+# === Camera topic and model path ===
+camera_topic = "/video_topic"  # Uncompressed image, based on your working pub
+model_path = "simonsaysv1.pt"
+
+# === Movement Command ===
 def move_command(direction):
     twist = Twist()
     duration = 1.5
@@ -109,29 +105,30 @@ class MicrophoneStream:
                     break
             yield b"".join(data)
 
-# === Frame Callback from TurtleBot Camera ===
+# === Frame Callback ===
 def camera_callback(msg):
-    global latest_frame
+    global latest_frame, frame_count, frame_ready
     try:
-        frame = bridgeObject.compressed_imgmsg_to_cv2(msg, "bgr8")
-        resized_frame = cv2.resize(frame, (640, 480))
-        latest_frame = resized_frame
+        frame = bridge.imgmsg_to_cv2(msg, "bgr8")
+        frame = cv2.resize(frame, (640, 480))
+        latest_frame = frame
 
-        # 🚨 Show frame immediately
-        cv2.imshow("📷 Live TurtleBot Feed", resized_frame)
-        key = cv2.waitKey(1)
-        if key == 27:  # ESC to close
+        cv2.imshow("📷 Live Feed", frame)
+        if cv2.waitKey(1) == 27:
             rospy.signal_shutdown("ESC pressed")
 
-        # Queue for gesture detection
+        frame_count += 1
+        if frame_count > 10:
+            frame_ready = True
+
         if not frame_queue.full():
-            frame_queue.put(resized_frame)
+            frame_queue.put(frame)
     except Exception as e:
-        rospy.logerr(f"❌ Frame conversion failed: {e}")
+        rospy.logerr(f"❌ Frame callback error: {e}")
 
 # === YOLO Gesture Detection ===
-def detect_gesture():
-    timeout = time.time() + 5  # 5 seconds max to detect gesture
+def detect_gesture(model):
+    timeout = time.time() + 5
     while time.time() < timeout:
         if not frame_queue.empty():
             frame = frame_queue.get()
@@ -146,15 +143,22 @@ def detect_gesture():
     rospy.logwarn("⚠️ No gesture detected in time.")
     return None
 
-# === Main Loop: Voice → Gesture → Movement ===
-def main_loop():
-    language_code = "en-US"
+# === Main loop for speech → vision → motion
+def audio_yolo_loop():
+    creds = service_account.Credentials.from_service_account_file("key.json")
+    client = speech.SpeechClient(credentials=creds)
+
+    model = YOLO(model_path)
+
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=RATE,
-        language_code=language_code,
+        language_code="en-US",
     )
-    streaming_config = speech.StreamingRecognitionConfig(config=config, interim_results=True)
+    streaming_config = speech.StreamingRecognitionConfig(
+        config=config,
+        interim_results=True,
+    )
 
     with MicrophoneStream(RATE, CHUNK) as stream:
         audio_generator = stream.generator()
@@ -173,19 +177,32 @@ def main_loop():
             if not simon_triggered and "simon says" in transcript:
                 rospy.loginfo("🗣️ Simon says detected! Waiting for gesture...")
                 simon_triggered = True
-                gesture = detect_gesture()
+                gesture = detect_gesture(model)
                 if gesture:
                     move_command(gesture)
                 simon_triggered = False
 
-# === Main Entry Point ===
+# === Entry point
 if __name__ == "__main__":
     rospy.init_node("simon_says_combined_node")
     pub = rospy.Publisher("cmd_vel", Twist, queue_size=10)
-    rospy.Subscriber(camera_topic, CompressedImage, camera_callback, queue_size=1)
+    rospy.Subscriber(camera_topic, Image, camera_callback, queue_size=1)
 
+    Thread(target=rospy.spin, daemon=True).start()
+
+    # Wait for camera frames before launching audio + YOLO
+    rospy.loginfo("⏳ Waiting for camera stream...")
+    start = time.time()
+    while not frame_ready and time.time() - start < 10:
+        time.sleep(0.1)
+
+    if not frame_ready:
+        rospy.logerr("❌ No camera feed detected. Exiting.")
+        exit()
+
+    rospy.loginfo("✅ Camera feed ready. Launching audio and vision loop.")
     try:
-        main_loop()
+        audio_yolo_loop()
     except KeyboardInterrupt:
         rospy.loginfo("🔻 Shutting down.")
     finally:
